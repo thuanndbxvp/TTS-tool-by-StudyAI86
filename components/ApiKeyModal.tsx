@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { KeyIcon } from './icons/KeyIcon';
 import { checkProxyIp } from '../services/elevenLabsService';
@@ -22,15 +23,16 @@ interface ApiKeyModalProps {
 
 const PHP_SCRIPT_CONTENT = `<?php
 /**
- * AI Studio Backend Relay - V4: Robust Proxy Fetching
- * Update: Tăng cường khả năng lấy Proxy, Retry 5 lần, Timeout dài hơn.
+ * AI Studio Backend Relay - V5: Enhanced Proxy Debugging
+ * Phiên bản này thêm logs lỗi chi tiết để biết tại sao Proxy không lấy được.
  */
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type, xi-api-key");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
 
-ini_set('max_execution_time', 180); // Tăng thời gian chạy tối đa lên 3 phút
+ini_set('max_execution_time', 180);
+ini_set('display_errors', 0); // Hide PHP errors from output, we handle them via JSON
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -50,26 +52,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 $action = isset($data['action']) ? $data['action'] : '';
 
 function getProxy($key) {
-    if (!$key) return ['success' => false, 'msg' => "Chưa nhập Proxy Key"];
+    if (!$key) return ['success' => false, 'msg' => "Missing Proxy Key"];
     
     // URL lấy proxy
     $url = "https://proxyxoay.shop/api/get.php?key=" . trim($key) . "&nhamang=Random&tinhthanh=0&t=" . time();
     
-    // Retry 5 lần (V4 update)
     $maxRetries = 5;
     $lastError = "";
+    $debugInfo = "";
 
     for ($i = 0; $i < $maxRetries; $i++) {
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30); // Tăng timeout lên 30s
-        // Random User Agent để tránh bị chặn
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        
+        // Rotate User Agents
         $agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/115.0"
         ];
-        curl_setopt($ch, CURLOPT_USERAGENT, $agents[$i % 2]);
+        curl_setopt($ch, CURLOPT_USERAGENT, $agents[$i % count($agents)]);
         
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -77,102 +81,94 @@ function getProxy($key) {
         curl_close($ch);
 
         if ($curlError) {
-            $lastError = "Curl Error: $curlError";
-            sleep(2); continue;
+            $lastError = "Curl: $curlError";
+            sleep(1); continue;
         }
 
         if ($response && $httpCode == 200) {
             $json = json_decode($response, true);
             
+            // Debug: Lưu lại response nếu không phải JSON
             if (!$json) {
-                $lastError = "Invalid JSON response from Proxy API";
+                $lastError = "Invalid JSON: " . substr($response, 0, 100); 
                 sleep(1); continue;
             }
 
+            // Trường hợp thành công
             if (isset($json['proxyhttp']) && !empty($json['proxyhttp'])) {
-                $raw = $json['proxyhttp'];
-                $cleanProxy = str_replace('::', '', $raw);
-                return ['success' => true, 'proxy' => $cleanProxy];
+                return ['success' => true, 'proxy' => str_replace('::', '', $json['proxyhttp'])];
             }
-            
             if (isset($json['proxysocks5']) && !empty($json['proxysocks5'])) {
-                $raw = $json['proxysocks5'];
-                $cleanProxy = str_replace('::', '', $raw);
-                return ['success' => true, 'proxy' => 'socks5://' . $cleanProxy];
+                return ['success' => true, 'proxy' => 'socks5://' . str_replace('::', '', $json['proxysocks5'])];
             }
-
             if (isset($json['proxy']) && !empty($json['proxy'])) {
                 return ['success' => true, 'proxy' => $json['proxy']];
             }
             
-            if (isset($json['message']) && stripos($json['message'], 'error') !== false) {
-                 // Nếu API báo lỗi cụ thể, trả về luôn không retry (VD: Sai key)
-                 if (stripos($json['message'], 'key') !== false || stripos($json['message'], 'expired') !== false) {
-                     return ['success' => false, 'msg' => "API Error: " . $json['message']];
+            // Trường hợp API trả về lỗi
+            if (isset($json['message'])) {
+                 $msg = $json['message'];
+                 // Nếu lỗi do hết key hoặc sai key -> dừng luôn không retry
+                 if (stripos($msg, 'key') !== false || stripos($msg, 'expired') !== false || stripos($msg, 'khong ton tai') !== false) {
+                     return ['success' => false, 'msg' => "Proxy API Refused: $msg"];
                  }
-                 $lastError = "API Message: " . $json['message'];
+                 $lastError = "API Msg: $msg";
+            } else {
+                $lastError = "Unknown JSON format";
             }
         } else {
-            $lastError = "HTTP Code: $httpCode";
+            $lastError = "HTTP $httpCode";
         }
         
-        sleep(2); // Đợi 2s trước khi thử lại
+        sleep(2);
     }
     
-    return ['success' => false, 'msg' => "Thất bại sau $maxRetries lần thử. Lỗi cuối: $lastError"];
+    return ['success' => false, 'msg' => "Fail ($maxRetries attempts). Last: $lastError"];
 }
 
 // === ACTION 1: CHECK IP ===
 if ($action === 'check_ip') {
     $proxyKey = isset($data['proxy_key']) ? $data['proxy_key'] : '';
     $finalResult = [];
-    $maxAttempts = 3;
     
-    for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-        $proxy = null;
-        $status = "Direct";
-        
-        if ($proxyKey) {
-            $proxyRes = getProxy($proxyKey);
-            if ($proxyRes['success']) {
-                $proxy = $proxyRes['proxy'];
-                $status = "Via Proxy ($attempt): " . $proxy;
-            } else {
-                $finalResult = ["ip" => "Error", "used_proxy" => $proxyRes['msg']];
-                break; 
-            }
-        }
-
-        $ch = curl_init("https://api.ipify.org?format=json");
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-        if ($proxy) curl_setopt($ch, CURLOPT_PROXY, $proxy);
-        
-        $res = curl_exec($ch);
-        $err = curl_error($ch);
-        curl_close($ch);
-        
-        if (!$err && $res) {
-            $ipData = json_decode($res, true);
-            $finalResult = [
-                "ip" => isset($ipData['ip']) ? $ipData['ip'] : 'Unknown',
-                "used_proxy" => $status
-            ];
-            
-            if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-                header("Content-Type: application/json");
-                echo json_encode(["status" => "success", "data" => $finalResult], JSON_PRETTY_PRINT);
-                exit;
-            }
-            break; 
-        }
-
-        $finalResult = ["ip" => "Error", "used_proxy" => $status . " | " . $err];
-        if ($attempt < $maxAttempts) sleep(1);
+    // Thử lấy proxy trước để xem có lỗi gì không
+    $proxyRes = getProxy($proxyKey);
+    
+    if (!$proxyRes['success']) {
+        // Trả về lỗi chi tiết từ getProxy
+        echo json_encode([
+            "ip" => "Error", 
+            "used_proxy" => $proxyRes['msg']
+        ]);
+        exit;
     }
+
+    $proxy = $proxyRes['proxy'];
     
-    echo json_encode($finalResult);
+    // Check IP thông qua Proxy đó
+    $ch = curl_init("https://api.ipify.org?format=json");
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_PROXY, $proxy);
+    
+    $res = curl_exec($ch);
+    $err = curl_error($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if (!$err && $res && $httpCode == 200) {
+        $ipData = json_decode($res, true);
+        echo json_encode([
+            "ip" => isset($ipData['ip']) ? $ipData['ip'] : 'Unknown (Parse Error)',
+            "used_proxy" => "Success: " . $proxy
+        ]);
+    } else {
+        echo json_encode([
+            "ip" => "Error", 
+            "used_proxy" => "Proxy $proxy connected but verify failed. Curl: $err, HTTP: $httpCode"
+        ]);
+    }
     exit;
 }
 
@@ -197,64 +193,56 @@ if ($action === 'generate_speech') {
     if (isset($data['language_code'])) $elBody['language_code'] = $data['language_code'];
     
     $jsonBody = json_encode($elBody);
-    $maxAttempts = 3;
-    $lastError = "";
     
-    for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-        $proxy = null;
-        if ($proxyKey) {
-            $proxyRes = getProxy($proxyKey);
-            if ($proxyRes['success']) {
-                $proxy = $proxyRes['proxy'];
-            } else {
-                http_response_code(502);
-                echo json_encode(["detail" => ["message" => "Proxy Error: " . $proxyRes['msg']]]);
-                exit;
-            }
-        }
+    // Logic: Lấy Proxy 1 lần, nếu fail thì báo lỗi luôn, không loop ở đây vì getProxy đã loop rồi
+    $proxyRes = getProxy($proxyKey);
+    if (!$proxyRes['success']) {
+        http_response_code(502);
+        echo json_encode(["detail" => ["message" => "Proxy Error: " . $proxyRes['msg']]]);
+        exit;
+    }
+    $proxy = $proxyRes['proxy'];
 
-        $ch = curl_init($targetUrl);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonBody);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        $headers = ["Content-Type: application/json", "xi-api-key: " . $apiKey, "Accept: audio/mpeg"];
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    // Call ElevenLabs
+    $ch = curl_init($targetUrl);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonBody);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    $headers = ["Content-Type: application/json", "xi-api-key: " . $apiKey, "Accept: audio/mpeg"];
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_PROXY, $proxy);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 60);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
         
-        if ($proxy) {
-            curl_setopt($ch, CURLOPT_PROXY, $proxy);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
-        } else {
-            curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-        }
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-        $curlErr = curl_error($ch);
-        curl_close($ch);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
 
-        if (!$curlErr && $httpCode == 200) {
-            if ($contentType) header("Content-Type: " . $contentType);
-            echo $response;
-            exit;
-        }
-
-        if (!$curlErr && $httpCode > 0 && $httpCode != 429 && $httpCode < 500) {
-            http_response_code($httpCode);
-            header("Content-Type: application/json");
-            echo $response;
-            exit;
-        }
-
-        $lastError = $curlErr ? "Curl: $curlErr" : "HTTP: $httpCode";
-        if ($attempt < $maxAttempts) sleep(2);
+    if (!$curlErr && $httpCode == 200) {
+        if ($contentType) header("Content-Type: " . $contentType);
+        echo $response;
+        exit;
     }
 
-    http_response_code(502);
+    // Nếu ElevenLabs lỗi, trả về nguyên văn để Client xử lý
+    http_response_code(502); // 502 Bad Gateway vì upstream (ElevenLabs via Proxy) lỗi
     header("Content-Type: application/json");
-    echo json_encode(["detail" => ["message" => "Relay Failed ($maxAttempts tries): $lastError"]]);
+    
+    $errMsg = "Curl Error: $curlErr";
+    if ($response) {
+         // Thử lấy message từ ElevenLabs
+         $jsonResp = json_decode($response, true);
+         if (isset($jsonResp['detail']['message'])) {
+             $errMsg = "ElevenLabs: " . $jsonResp['detail']['message'];
+         } else {
+             $errMsg = "ElevenLabs HTTP $httpCode";
+         }
+    }
+    
+    echo json_encode(["detail" => ["message" => $errMsg . " (Proxy: $proxy)"]]);
     exit;
 }
 
@@ -262,7 +250,7 @@ header("Content-Type: application/json");
 echo json_encode(["error" => "Invalid Action"]);
 ?>`;
 
-// Key cố định trong hệ thống
+// Key cố định
 const FIXED_PROXY_KEY = 'DQvKYsgUUCGylMsMWAncay';
 
 export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
@@ -273,7 +261,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   onElevenLabsConfigChange,
   geminiApiKey = '',
   onGeminiConfigChange,
-  proxyKey, // Prop này có thể bị bỏ qua hoặc dùng để init, nhưng code dưới sẽ dùng FIXED_PROXY_KEY
+  proxyKey, // We mostly ignore this prop now for display, using FIXED_PROXY_KEY
   onProxyConfigChange,
   isProxyEnabled
 }) => {
@@ -299,9 +287,8 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     setElevenLabsKeysInput(elevenLabsApiKey);
     setElevenLabsUrlInput(elevenLabsBaseUrl);
     setGeminiKeyInput(geminiApiKey);
-    // setProxyKeyInput(proxyKey); // Removed
     setUseProxyInput(isProxyEnabled);
-  }, [elevenLabsApiKey, elevenLabsBaseUrl, geminiApiKey, proxyKey, isProxyEnabled, isOpen]);
+  }, [elevenLabsApiKey, elevenLabsBaseUrl, geminiApiKey, isProxyEnabled, isOpen]);
   
   // Reset IP check state when modal opens
   useEffect(() => {
@@ -329,6 +316,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   }
 
   const handleSaveProxy = () => {
+      // Always save with the Fixed Key
       onProxyConfigChange(FIXED_PROXY_KEY, useProxyInput);
   }
 
@@ -338,7 +326,6 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       setLocalIp(null);
       setIpError(null);
       
-      // Luôn sử dụng Key cố định
       const keyToCheck = FIXED_PROXY_KEY;
       
       try {
@@ -465,7 +452,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                     )}
                 </h3>
                 <p className="text-slate-400 text-xs mb-4">
-                    Tự động đổi IP để tránh bị ElevenLabs chặn. Key hệ thống được cấu hình sẵn.
+                    Hệ thống tự động sử dụng Proxy xoay để tránh lỗi chặn IP từ ElevenLabs.
                 </p>
 
                 <div className="space-y-3">
@@ -474,12 +461,18 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                             <input 
                                 type="checkbox"
                                 checked={useProxyInput}
-                                onChange={(e) => setUseProxyInput(e.target.checked)}
+                                onChange={(e) => {
+                                    setUseProxyInput(e.target.checked);
+                                }}
                                 className="rounded border-slate-600 bg-slate-700 text-[--color-primary-500] focus:ring-[--color-primary-500]"
                             />
-                            <span className="text-sm font-medium text-slate-300">Bật sử dụng Proxy Xoay</span>
+                            <span className="text-sm font-medium text-slate-300">Bật Proxy Xoay</span>
                         </label>
-                        <button onClick={handleSaveProxy} className="bg-[--color-primary-600] hover:bg-[--color-primary-500] text-white font-semibold px-4 py-2 rounded-lg transition-colors text-sm">
+                        <button 
+                            onClick={handleSaveProxy} 
+                            className={`bg-[--color-primary-600] hover:bg-[--color-primary-500] text-white font-semibold px-4 py-2 rounded-lg transition-colors text-sm ${useProxyInput === isProxyEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            disabled={useProxyInput === isProxyEnabled}
+                        >
                             Lưu
                         </button>
                     </div>
@@ -487,16 +480,24 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                 
                 {/* Download Backend Script */}
                 <div className="mt-3 p-3 bg-slate-700/30 rounded-lg border border-slate-600/50">
-                    <p className="text-[10px] text-slate-400 mb-2">
-                        Để Proxy hoạt động, bạn cần tải file Backend này (đã fix lỗi) và upload đè lên file cũ trên host của bạn.
-                    </p>
-                    <button 
-                        onClick={handleDownloadPhp}
-                        className="w-full flex items-center justify-center space-x-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs py-2 px-3 rounded border border-slate-500 transition-colors"
-                    >
-                        <DownloadIcon />
-                        <span>Tải file ai_studio_code.php (Bản chuẩn)</span>
-                    </button>
+                    <div className="flex items-start space-x-2">
+                        <span className="text-yellow-500 text-lg">⚠️</span>
+                        <div className="flex-1">
+                             <p className="text-[11px] text-slate-300 mb-2 font-semibold">
+                                QUAN TRỌNG: Bạn cần TẢI và UPLOAD file PHP mới này lên server để fix lỗi Proxy.
+                            </p>
+                             <p className="text-[10px] text-slate-400 mb-2">
+                                File cũ có thể không tương thích hoặc thiếu logic retry khi API ProxyXoay bị chậm.
+                            </p>
+                            <button 
+                                onClick={handleDownloadPhp}
+                                className="w-full flex items-center justify-center space-x-2 bg-slate-700 hover:bg-slate-600 text-[--color-primary-400] font-bold text-xs py-2 px-3 rounded border border-slate-500 transition-colors animate-pulse"
+                            >
+                                <DownloadIcon />
+                                <span>Tải file ai_studio_code.php (Bản Fix lỗi)</span>
+                            </button>
+                        </div>
+                    </div>
                 </div>
                 
                 {/* IP Check Tool - Always Visible */}
