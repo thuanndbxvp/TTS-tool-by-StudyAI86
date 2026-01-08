@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { KeyIcon } from './icons/KeyIcon';
 import { checkProxyIp } from '../services/elevenLabsService';
@@ -23,12 +22,8 @@ interface ApiKeyModalProps {
 
 const PHP_SCRIPT_CONTENT = `<?php
 /**
- * AI Studio Backend Relay - Fixed Version
- * Tương thích: React App Action-based Request
- * Chức năng: 
- * 1. Nhận JSON Action từ React.
- * 2. Lấy Proxy từ ProxyXoay.shop.
- * 3. Fake Request tới ElevenLabs qua Proxy để tránh lỗi "Unusual activity".
+ * AI Studio Backend Relay - Robust Version (v2.0)
+ * Update: Cải thiện logic lấy Proxy (Retry cơ chế, báo lỗi chi tiết).
  */
 
 header("Access-Control-Allow-Origin: *");
@@ -47,53 +42,77 @@ $data = json_decode($input, true);
 $action = isset($data['action']) ? $data['action'] : '';
 
 /**
- * Hàm lấy Proxy từ ProxyXoay.shop
+ * Hàm lấy Proxy từ ProxyXoay.shop (Có thử lại 3 lần)
+ * Trả về mảng: ['success' => bool, 'proxy' => string|null, 'msg' => string]
  */
 function getProxy($key) {
-    if (!$key) return null;
-    // API lấy proxy: Random nhà mạng, toàn quốc
-    $url = "https://proxyxoay.shop/api/get.php?key=" . $key . "&nhamang=Random&tinhthanh=0";
+    if (!$key) return ['success' => false, 'msg' => "Chưa nhập Proxy Key"];
     
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-    $response = curl_exec($ch);
-    curl_close($ch);
-    
-    $json = json_decode($response, true);
-    // ProxyXoay trả về format: {"status": 1, "proxy": "ip:port", ...}
-    if (isset($json['proxy'])) {
-        return $json['proxy'];
+    $url = "https://proxyxoay.shop/api/get.php?key=" . trim($key) . "&nhamang=Random&tinhthanh=0";
+    $maxRetries = 3; 
+
+    for ($i = 0; $i < $maxRetries; $i++) {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        // Giả lập trình duyệt để tránh bị chặn
+        curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($response && $httpCode == 200) {
+            $json = json_decode($response, true);
+            
+            // Trường hợp 1: API trả về thành công { "proxy": "..." }
+            if (isset($json['proxy']) && !empty($json['proxy'])) {
+                return ['success' => true, 'proxy' => $json['proxy'], 'msg' => 'Success'];
+            }
+            
+            // Trường hợp 2: API trả về lỗi cụ thể { "status": false, "msg": "..." }
+            if (isset($json['msg'])) {
+                // Nếu là lỗi, ta không retry mà trả về luôn để user biết (VD: Key hết hạn)
+                return ['success' => false, 'msg' => "API Error: " . $json['msg']];
+            }
+        }
+        
+        // Nếu lỗi kết nối hoặc format lạ, đợi 1s rồi thử lại
+        sleep(1);
     }
-    return null;
+    
+    return ['success' => false, 'msg' => "Không thể kết nối tới Proxy Server (Timeout hoặc Lỗi mạng)"];
 }
 
-// === ACTION 1: CHECK IP (Kiểm tra xem Proxy có hoạt động không) ===
+// === ACTION 1: CHECK IP ===
 if ($action === 'check_ip') {
     $proxyKey = isset($data['proxy_key']) ? $data['proxy_key'] : '';
     $proxy = null;
     $status = "Direct Connection (No Proxy)";
+    $proxyErrorMsg = "";
 
     if ($proxyKey) {
-        $proxy = getProxy($proxyKey);
-        if ($proxy) {
+        $proxyResult = getProxy($proxyKey);
+        if ($proxyResult['success']) {
+            $proxy = $proxyResult['proxy'];
             $status = "Via Proxy: " . $proxy;
         } else {
-            $status = "Proxy Error (Key Invalid or Expired)";
+            $proxyErrorMsg = $proxyResult['msg'];
+            $status = "Proxy Error: " . $proxyErrorMsg;
         }
     }
 
-    // Check IP hiện tại (thông qua Proxy nếu có)
+    // Check IP hiện tại (thông qua Proxy nếu lấy được)
     $ch = curl_init("https://api.ipify.org?format=json");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
     
     if ($proxy) {
         curl_setopt($ch, CURLOPT_PROXY, $proxy);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 20); // Tăng timeout khi dùng proxy
     } else {
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
     }
     
     $res = curl_exec($ch);
@@ -101,7 +120,7 @@ if ($action === 'check_ip') {
     curl_close($ch);
     
     if ($err) {
-        echo json_encode(["ip" => "Error", "used_proxy" => $status . " | " . $err]);
+        echo json_encode(["ip" => "Error", "used_proxy" => $status . " | Curl Error: " . $err]);
     } else {
         $ipData = json_decode($res, true);
         echo json_encode([
@@ -112,7 +131,7 @@ if ($action === 'check_ip') {
     exit;
 }
 
-// === ACTION 2: GENERATE SPEECH (Tạo giọng đọc qua Proxy) ===
+// === ACTION 2: GENERATE SPEECH ===
 if ($action === 'generate_speech') {
     $apiKey = isset($data['api_key']) ? $data['api_key'] : '';
     $proxyKey = isset($data['proxy_key']) ? $data['proxy_key'] : '';
@@ -124,16 +143,26 @@ if ($action === 'generate_speech') {
         exit;
     }
 
-    // 1. Lấy Proxy (nếu có key)
+    // 1. Lấy Proxy
     $proxy = null;
+    $proxyDebug = "";
+    
     if ($proxyKey) {
-        $proxy = getProxy($proxyKey);
+        $proxyResult = getProxy($proxyKey);
+        if ($proxyResult['success']) {
+            $proxy = $proxyResult['proxy'];
+        } else {
+            // Nếu lấy proxy thất bại, ta throw lỗi luôn để React App biết mà dừng lại
+            // Hoặc có thể fallback về IP thật (tùy nhu cầu, ở đây chọn báo lỗi an toàn)
+            http_response_code(502); // Bad Gateway
+            echo json_encode(["detail" => ["message" => "Proxy Failure: " . $proxyResult['msg']]]);
+            exit;
+        }
     }
 
     // 2. Cấu hình Request tới ElevenLabs
     $targetUrl = "https://api.elevenlabs.io/v1/text-to-speech/" . $voiceId;
     
-    // Tái tạo body chuẩn cho ElevenLabs
     $elBody = [
         "text" => $data['text'],
         "model_id" => $data['model_id'],
@@ -157,10 +186,10 @@ if ($action === 'generate_speech') {
     ];
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
     
-    // Gắn Proxy nếu có
+    // Gắn Proxy
     if ($proxy) {
         curl_setopt($ch, CURLOPT_PROXY, $proxy);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 120); // Tăng timeout
+        curl_setopt($ch, CURLOPT_TIMEOUT, 120); 
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30);
     } else {
         curl_setopt($ch, CURLOPT_TIMEOUT, 60);
@@ -172,25 +201,22 @@ if ($action === 'generate_speech') {
     $error = curl_error($ch);
     curl_close($ch);
     
-    // 3. Trả về kết quả
     http_response_code($httpCode);
     if ($contentType) {
         header("Content-Type: " . $contentType);
     }
 
     if ($error) {
-        // Trả lỗi dạng JSON để React hiển thị đẹp
         header("Content-Type: application/json");
-        echo json_encode(["detail" => ["message" => "Relay Error: " . $error . ($proxy ? " (Used Proxy: $proxy)" : "")]]);
+        echo json_encode(["detail" => ["message" => "Relay Error: " . $error . ($proxy ? " (Proxy: $proxy)" : "")]]);
     } else {
         echo $response;
     }
     exit;
 }
 
-// Nếu không đúng Action
 header("Content-Type: application/json");
-echo json_encode(["error" => "Invalid Action or Empty Request"]);
+echo json_encode(["error" => "Invalid Action"]);
 ?>`;
 
 export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
