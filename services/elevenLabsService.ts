@@ -156,6 +156,7 @@ export async function generateElevenLabsSpeechBytes(
       });
   }
 
+  // 1. Kiểm tra HTTP Status trước
   if (!response.ok) {
     const errorText = await response.text();
     let errorMessage = "Failed to generate speech";
@@ -182,6 +183,32 @@ export async function generateElevenLabsSpeechBytes(
     throw new Error(errorMessage);
   }
 
+  // 2. Lấy ArrayBuffer
   const arrayBuffer = await response.arrayBuffer();
+
+  // 3. QUAN TRỌNG: Kiểm tra xem ArrayBuffer này có phải là file Audio thật không hay là JSON báo lỗi
+  // Nhiều khi Proxy/PHP trả về HTTP 200 nhưng nội dung lại là text báo lỗi.
+  try {
+      // Decode 1000 bytes đầu tiên để kiểm tra text
+      const textDecoder = new TextDecoder();
+      const firstBytes = arrayBuffer.slice(0, 1000);
+      const textStart = textDecoder.decode(firstBytes).trim();
+
+      // Nếu bắt đầu bằng { và có chứa "detail" hoặc "message", khả năng cao là JSON lỗi
+      if (textStart.startsWith('{') && (textStart.includes('"detail"') || textStart.includes('"message"') || textStart.includes('"error"'))) {
+          // Thử parse toàn bộ
+          const fullText = textDecoder.decode(arrayBuffer);
+          const errorJson = JSON.parse(fullText);
+          const msg = errorJson.detail?.message || errorJson.message || errorJson.error || "Unknown API Error inside 200 OK";
+          throw new Error(`API Error: ${msg}`);
+      }
+  } catch (e: any) {
+      // Nếu là lỗi chúng ta vừa throw thì throw tiếp
+      if (e.message && e.message.startsWith("API Error")) {
+          throw e;
+      }
+      // Các lỗi parse JSON khác thì bỏ qua, tiếp tục decode audio
+  }
+
   return await decodeAudioDataToPcm(arrayBuffer, speed);
 }

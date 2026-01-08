@@ -91,7 +91,8 @@ const App: React.FC = () => {
   const [elevenLabsVoices, setElevenLabsVoices] = useState<ElevenLabsVoice[]>([]);
   const [elevenLabsModels, setElevenLabsModels] = useState<ElevenLabsModel[]>([]);
   const [selectedElevenLabsVoice, setSelectedElevenLabsVoice] = useState<string>('');
-  const [selectedElevenLabsModel, setSelectedElevenLabsModel] = useState<string>('eleven_multilingual_v2');
+  // Mặc định chọn Flash V2.5 (thường tương ứng với v3 alpha hoặc model nhanh nhất hiện tại)
+  const [selectedElevenLabsModel, setSelectedElevenLabsModel] = useState<string>('eleven_flash_v2_5');
   const [isLoadingElevenLabs, setIsLoadingElevenLabs] = useState<boolean>(false);
   const [useCustomVoiceId, setUseCustomVoiceId] = useState<boolean>(false);
   const [showFeaturedVoices, setShowFeaturedVoices] = useState<boolean>(true);
@@ -232,14 +233,29 @@ const App: React.FC = () => {
                 const clyde = voices.find(v => v.voice_id === 'wyWA56cQNU2KqUW4eCsI');
                 setSelectedElevenLabsVoice(clyde ? clyde.voice_id : voices[0].voice_id);
             }
-            // Ensure default model exists or select the first available one
-            if (!models.some(m => m.model_id === selectedElevenLabsModel)) {
-                 // Ưu tiên chọn các model phổ biến nếu có
-                 const preferredModel = models.find(m => m.model_id === 'eleven_multilingual_v2') 
-                                     || models.find(m => m.model_id === 'eleven_turbo_v2_5')
-                                     || models[0];
-                 if (preferredModel) setSelectedElevenLabsModel(preferredModel.model_id);
+            
+            // Logic chọn Model mặc định thông minh hơn
+            if (models.length > 0) {
+                 // 1. Ưu tiên model chứa "v3" hoặc "alpha" trong tên (theo yêu cầu người dùng)
+                 const v3Model = models.find(m => m.name.toLowerCase().includes('v3') || m.name.toLowerCase().includes('alpha'));
+                 
+                 // 2. Nếu không có, ưu tiên Flash v2.5
+                 const flashModel = models.find(m => m.model_id === 'eleven_flash_v2_5');
+                 
+                 // 3. Fallback về Multilingual v2
+                 const multiV2 = models.find(m => m.model_id === 'eleven_multilingual_v2');
+
+                 if (v3Model) {
+                     setSelectedElevenLabsModel(v3Model.model_id);
+                 } else if (flashModel) {
+                     setSelectedElevenLabsModel(flashModel.model_id);
+                 } else if (multiV2) {
+                     setSelectedElevenLabsModel(multiV2.model_id);
+                 } else {
+                     setSelectedElevenLabsModel(models[0].model_id);
+                 }
             }
+
             setError(null);
         }).catch((err: any) => {
             setError(`Không thể tải dữ liệu ElevenLabs: ${err?.message || String(err)}`);
