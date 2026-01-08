@@ -1,7 +1,8 @@
+
 import { GoogleGenAI, Modality } from "@google/genai";
 import { decode, createWavBlob, changePcmSpeed } from "../utils/audioUtils";
 
-export async function generateSpeechBytes(text: string, voice: string, apiKey?: string, speed: number = 1.0): Promise<Uint8Array> {
+export async function generateSpeechBytes(text: string, voice: string, apiKey?: string, speed: number = 1.0, modelId: string = "gemini-2.5-flash-preview-tts"): Promise<Uint8Array> {
   const key = apiKey || process.env.API_KEY;
   if (!key) {
     throw new Error("API key is required. Please set it in Settings.");
@@ -12,7 +13,8 @@ export async function generateSpeechBytes(text: string, voice: string, apiKey?: 
     return new Uint8Array(0);
   }
 
-  const model = "gemini-2.5-flash-preview-tts";
+  // Sử dụng model được chọn hoặc mặc định
+  const model = modelId;
   
   const response = await ai.models.generateContent({
     model,
@@ -44,8 +46,8 @@ export async function generateSpeechBytes(text: string, voice: string, apiKey?: 
 }
 
 
-export async function generateSpeech(text: string, voice: string, apiKey?: string, speed: number = 1.0): Promise<string> {
-  const audioBytes = await generateSpeechBytes(text, voice, apiKey, speed);
+export async function generateSpeech(text: string, voice: string, apiKey?: string, speed: number = 1.0, modelId: string = "gemini-2.5-flash-preview-tts"): Promise<string> {
+  const audioBytes = await generateSpeechBytes(text, voice, apiKey, speed, modelId);
   const wavBlob = createWavBlob(audioBytes);
   const audioUrl = URL.createObjectURL(wavBlob);
   return audioUrl;

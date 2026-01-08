@@ -21,19 +21,34 @@ import { SrtResultPlayer } from './components/SrtResultPlayer';
 
 
 const geminiVoiceOptions = [
-  // Giọng Nữ
+  // Giọng Mới
+  { id: 'leda', name: 'Nữ: Leda (Tinh tế, Sáng tạo)' },
+  { id: 'mimosa', name: 'Nữ: Mimosa (Dịu dàng, Chân thành)' },
+  { id: 'dipper', name: 'Nam: Dipper (Vui vẻ, Hài hước)' },
+  { id: 'triton', name: 'Nam: Triton (Sâu sắc, Uy lực)' },
+  { id: 'oberon', name: 'Nam: Oberon (Cổ điển, Trầm)' },
+  { id: 'umbriel', name: 'Nam: Umbriel (Bí ẩn, Lôi cuốn)' },
+  
+  // Giọng Nữ Cũ
   { id: 'aoede', name: 'Nữ: Aoede (Tự tin, Trang trọng)' },
   { id: 'kore', name: 'Nữ: Kore (Trầm tĩnh, Nhẹ nhàng)' },
   { id: 'zephyr', name: 'Nữ: Zephyr (Thân thiện, Ấm áp)' },
   { id: 'vega', name: 'Nữ: Vega (Sôi nổi, Rõ ràng)' },
   { id: 'pulcherrima', name: 'Nữ: Pulcherrima (Trong trẻo)' },
   { id: 'vindemiatrix', name: 'Nữ: Vindemiatrix (Mềm mại)' },
-  // Giọng Nam
+  // Giọng Nam Cũ
   { id: 'puck', name: 'Nam: Puck (Năng lượng, Tự nhiên)' },
   { id: 'charon', name: 'Nam: Charon (Trầm, Sâu lắng)' },
   { id: 'fenrir', name: 'Nam: Fenrir (Uy quyền, Mạnh mẽ)' },
   { id: 'orus', name: 'Nam: Orus (Ấm áp, Tin cậy)' },
   { id: 'rasalgethi', name: 'Nam: Rasalgethi (Rõ ràng, Hiện đại)' },
+];
+
+const geminiModels = [
+    { id: 'gemini-2.5-flash-preview-tts', name: 'Gemini 2.5 Flash TTS (Tối ưu cho Audio)' },
+    { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (Mới)' },
+    { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Nhanh)' },
+    { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro (Thông minh)' },
 ];
 
 const geminiStyles = [
@@ -81,6 +96,7 @@ const App: React.FC = () => {
   // Gemini State
   const [geminiApiKey, setGeminiApiKey] = useState<string>('');
   const [selectedGeminiVoice, setSelectedGeminiVoice] = useState<string>('kore');
+  const [selectedGeminiModel, setSelectedGeminiModel] = useState<string>('gemini-2.5-flash-preview-tts'); // Default
   const [selectedLanguage, setSelectedLanguage] = useState<string>('other'); 
   const [selectedRegion, setSelectedRegion] = useState<string>('bac'); 
   const [selectedGeminiStyle, setSelectedGeminiStyle] = useState<string>('normal');
@@ -97,8 +113,8 @@ const App: React.FC = () => {
   const [useCustomVoiceId, setUseCustomVoiceId] = useState<boolean>(false);
   const [showFeaturedVoices, setShowFeaturedVoices] = useState<boolean>(true);
   
-  // Proxy Xoay State
-  const [proxyKey, setProxyKey] = useState<string>('');
+  // Proxy Xoay State - Khởi tạo với Key Cố Định
+  const [proxyKey, setProxyKey] = useState<string>('DQvKYsgUUCGylMsMWAncay');
   const [isProxyEnabled, setIsProxyEnabled] = useState<boolean>(false);
 
   // ElevenLabs Advanced Settings
@@ -158,12 +174,15 @@ const App: React.FC = () => {
     try {
       const savedElevenLabsKey = localStorage.getItem('elevenLabsApiKey');
       const savedElevenLabsBaseUrl = localStorage.getItem('elevenLabsBaseUrl');
-      const savedProxyKey = localStorage.getItem('proxyKey');
+      // const savedProxyKey = localStorage.getItem('proxyKey'); // Ignore saved proxy key
       const savedIsProxyEnabled = localStorage.getItem('isProxyEnabled');
 
       if (savedElevenLabsKey) setElevenLabsApiKey(savedElevenLabsKey);
       if (savedElevenLabsBaseUrl) setElevenLabsBaseUrl(savedElevenLabsBaseUrl);
-      if (savedProxyKey) setProxyKey(savedProxyKey);
+      
+      // Luôn đặt key cố định, không đọc từ local storage để tránh dùng key cũ
+      setProxyKey('DQvKYsgUUCGylMsMWAncay');
+      
       if (savedIsProxyEnabled !== null) setIsProxyEnabled(savedIsProxyEnabled === 'true');
     } catch (error) {
       console.error(error);
@@ -387,7 +406,7 @@ const App: React.FC = () => {
       let audioUrl: string;
       if (ttsProvider === 'gemini') {
            const instruction = getInstruction();
-           audioUrl = await generateSpeech(instruction + sampleText, selectedGeminiVoice, geminiApiKey, speechSpeed);
+           audioUrl = await generateSpeech(instruction + sampleText, selectedGeminiVoice, geminiApiKey, speechSpeed, selectedGeminiModel);
       } else {
            const keys = getElevenLabsKeysList();
            if (keys.length === 0) throw new Error("Vui lòng nhập API Key ElevenLabs");
@@ -492,7 +511,7 @@ const App: React.FC = () => {
             let speechBytes: Uint8Array = new Uint8Array(0);
 
             if (ttsProvider === 'gemini') {
-                 speechBytes = await generateSpeechBytes(textToRead, selectedGeminiVoice, geminiApiKey, speechSpeed);
+                 speechBytes = await generateSpeechBytes(textToRead, selectedGeminiVoice, geminiApiKey, speechSpeed, selectedGeminiModel);
                  // Delay for Gemini Rate Limit
                  if (i < subtitles.length - 1) await new Promise(r => setTimeout(r, 21000));
             } else {
@@ -550,7 +569,7 @@ const App: React.FC = () => {
             let speechBytes: Uint8Array = new Uint8Array(0);
 
             if (ttsProvider === 'gemini') {
-                 audioUrl = await generateSpeech(textToRead, selectedGeminiVoice, geminiApiKey, speechSpeed);
+                 audioUrl = await generateSpeech(textToRead, selectedGeminiVoice, geminiApiKey, speechSpeed, selectedGeminiModel);
                  if (i < paragraphs.length - 1) await new Promise(r => setTimeout(r, 21000));
             } else {
                  let attempts = 0;
@@ -610,7 +629,7 @@ const App: React.FC = () => {
         let speechBytes: Uint8Array = new Uint8Array(0);
 
         if (ttsProvider === 'gemini') {
-            audioUrl = await generateSpeech(textToRead, selectedGeminiVoice, geminiApiKey, speechSpeed);
+            audioUrl = await generateSpeech(textToRead, selectedGeminiVoice, geminiApiKey, speechSpeed, selectedGeminiModel);
         } else {
              if (elevenLabsKeys.length === 0) throw new Error("No ElevenLabs keys");
              
@@ -836,6 +855,20 @@ const App: React.FC = () => {
                                             Bạn cần nhập API Key của Gemini trong phần cài đặt (hoặc cấu hình biến môi trường).
                                         </div>
                                     )}
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-400 mb-2">Mô hình (Model)</label>
+                                        <select
+                                            value={selectedGeminiModel}
+                                            onChange={(e) => setSelectedGeminiModel(e.target.value)}
+                                            disabled={isDisabled}
+                                            className="w-full bg-slate-900/50 border border-slate-600 rounded-lg p-3 text-slate-300"
+                                        >
+                                            {geminiModels.map(m => (
+                                                <option key={m.id} value={m.id}>{m.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
 
                                     <div>
                                         <label className="block text-sm font-medium text-slate-400 mb-2">Vùng miền (VN)</label>
