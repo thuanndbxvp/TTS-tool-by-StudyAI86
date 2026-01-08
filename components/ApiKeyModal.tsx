@@ -22,8 +22,8 @@ interface ApiKeyModalProps {
 
 const PHP_SCRIPT_CONTENT = `<?php
 /**
- * AI Studio Backend Relay - Fixed for ProxyXoay JSON Format
- * Update: Xử lý định dạng JSON cụ thể của proxyxoay.shop (proxyhttp/proxysocks5)
+ * AI Studio Backend Relay - Browser Debug Supported
+ * Update: Hỗ trợ truy cập trực tiếp từ trình duyệt để test IP/Proxy
  */
 
 header("Access-Control-Allow-Origin: *");
@@ -36,9 +36,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// Đọc dữ liệu JSON từ React App
+// 1. Đọc dữ liệu đầu vào
 $input = file_get_contents("php://input");
 $data = json_decode($input, true);
+
+// 2. [MỚI] Hỗ trợ Debug trực tiếp trên trình duyệt (GET Request)
+// Nếu truy cập link trực tiếp, tự động chuyển thành action 'check_ip'
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $data = [
+        'action' => 'check_ip',
+        'proxy_key' => isset($_GET['key']) ? $_GET['key'] : '' // Lấy key từ URL ?key=...
+    ];
+}
+
 $action = isset($data['action']) ? $data['action'] : '';
 
 /**
@@ -66,10 +76,9 @@ function getProxy($key) {
         if ($response && $httpCode == 200) {
             $json = json_decode($response, true);
             
-            // LOGIC LỌC IP MỚI:
+            // LOGIC LỌC IP:
             
             // 1. Ưu tiên lấy 'proxyhttp' (Dễ dùng nhất với Curl)
-            // Format trả về thường là: "160.250.166.21:10514::" -> Cần xóa "::"
             if (isset($json['proxyhttp']) && !empty($json['proxyhttp'])) {
                 $raw = $json['proxyhttp'];
                 $cleanProxy = str_replace('::', '', $raw); // Xóa :: ở cuối
@@ -80,16 +89,15 @@ function getProxy($key) {
             if (isset($json['proxysocks5']) && !empty($json['proxysocks5'])) {
                 $raw = $json['proxysocks5'];
                 $cleanProxy = str_replace('::', '', $raw);
-                // Với Socks5, Curl cần prefix socks5://
                 return ['success' => true, 'proxy' => 'socks5://' . $cleanProxy, 'msg' => 'Success (SOCKS5)'];
             }
 
-            // 3. Fallback: Kiểm tra key 'proxy' (cho các nhà mạng khác hoặc format cũ)
+            // 3. Fallback: Kiểm tra key 'proxy'
             if (isset($json['proxy']) && !empty($json['proxy'])) {
                 return ['success' => true, 'proxy' => $json['proxy'], 'msg' => 'Success (Standard)'];
             }
             
-            // 4. Kiểm tra lỗi từ API (nếu có key 'msg' hoặc 'message' mà không có proxy)
+            // 4. Kiểm tra lỗi từ API
             if (isset($json['message']) && stripos($json['message'], 'error') !== false) {
                  return ['success' => false, 'msg' => "API Error: " . $json['message']];
             }
@@ -134,6 +142,27 @@ if ($action === 'check_ip') {
     $err = curl_error($ch);
     curl_close($ch);
     
+    // Nếu là trình duyệt (GET), hiển thị format đẹp hơn chút
+    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+        header("Content-Type: application/json");
+        if ($err) {
+            echo json_encode([
+                "status" => "error",
+                "message" => "Curl Error: $err",
+                "proxy_status" => $status
+            ], JSON_PRETTY_PRINT);
+        } else {
+            $ipData = json_decode($res, true);
+            echo json_encode([
+                "current_ip" => isset($ipData['ip']) ? $ipData['ip'] : 'Unknown',
+                "connection_type" => $proxy ? "PROXY" : "DIRECT",
+                "proxy_details" => $status
+            ], JSON_PRETTY_PRINT);
+        }
+        exit;
+    }
+
+    // Response chuẩn cho React App
     if ($err) {
         echo json_encode(["ip" => "Error", "used_proxy" => $status . " | Curl Error: " . $err]);
     } else {
