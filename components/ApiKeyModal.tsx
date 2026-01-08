@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { KeyIcon } from './icons/KeyIcon';
 import { checkProxyIp } from '../services/elevenLabsService';
 import { SpinnerIcon } from './icons/SpinnerIcon';
+import { DownloadIcon } from './icons/DownloadIcon';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -19,6 +20,178 @@ interface ApiKeyModalProps {
   onProxyConfigChange: (key: string, enabled: boolean) => void;
   isProxyEnabled: boolean;
 }
+
+const PHP_SCRIPT_CONTENT = `<?php
+/**
+ * AI Studio Backend Relay - Fixed Version
+ * Tương thích: React App Action-based Request
+ * Chức năng: 
+ * 1. Nhận JSON Action từ React.
+ * 2. Lấy Proxy từ ProxyXoay.shop.
+ * 3. Fake Request tới ElevenLabs qua Proxy để tránh lỗi "Unusual activity".
+ */
+
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
+
+// Xử lý Preflight Request
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit;
+}
+
+// Đọc dữ liệu JSON từ React App
+$input = file_get_contents("php://input");
+$data = json_decode($input, true);
+$action = isset($data['action']) ? $data['action'] : '';
+
+/**
+ * Hàm lấy Proxy từ ProxyXoay.shop
+ */
+function getProxy($key) {
+    if (!$key) return null;
+    // API lấy proxy: Random nhà mạng, toàn quốc
+    $url = "https://proxyxoay.shop/api/get.php?key=" . $key . "&nhamang=Random&tinhthanh=0";
+    
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    $response = curl_exec($ch);
+    curl_close($ch);
+    
+    $json = json_decode($response, true);
+    // ProxyXoay trả về format: {"status": 1, "proxy": "ip:port", ...}
+    if (isset($json['proxy'])) {
+        return $json['proxy'];
+    }
+    return null;
+}
+
+// === ACTION 1: CHECK IP (Kiểm tra xem Proxy có hoạt động không) ===
+if ($action === 'check_ip') {
+    $proxyKey = isset($data['proxy_key']) ? $data['proxy_key'] : '';
+    $proxy = null;
+    $status = "Direct Connection (No Proxy)";
+
+    if ($proxyKey) {
+        $proxy = getProxy($proxyKey);
+        if ($proxy) {
+            $status = "Via Proxy: " . $proxy;
+        } else {
+            $status = "Proxy Error (Key Invalid or Expired)";
+        }
+    }
+
+    // Check IP hiện tại (thông qua Proxy nếu có)
+    $ch = curl_init("https://api.ipify.org?format=json");
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    
+    if ($proxy) {
+        curl_setopt($ch, CURLOPT_PROXY, $proxy);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    } else {
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+    }
+    
+    $res = curl_exec($ch);
+    $err = curl_error($ch);
+    curl_close($ch);
+    
+    if ($err) {
+        echo json_encode(["ip" => "Error", "used_proxy" => $status . " | " . $err]);
+    } else {
+        $ipData = json_decode($res, true);
+        echo json_encode([
+            "ip" => isset($ipData['ip']) ? $ipData['ip'] : 'Unknown',
+            "used_proxy" => $status
+        ]);
+    }
+    exit;
+}
+
+// === ACTION 2: GENERATE SPEECH (Tạo giọng đọc qua Proxy) ===
+if ($action === 'generate_speech') {
+    $apiKey = isset($data['api_key']) ? $data['api_key'] : '';
+    $proxyKey = isset($data['proxy_key']) ? $data['proxy_key'] : '';
+    $voiceId = isset($data['voice_id']) ? $data['voice_id'] : '';
+    
+    if (!$apiKey || !$voiceId) {
+        http_response_code(400);
+        echo json_encode(["detail" => ["message" => "Missing API Key or Voice ID"]]);
+        exit;
+    }
+
+    // 1. Lấy Proxy (nếu có key)
+    $proxy = null;
+    if ($proxyKey) {
+        $proxy = getProxy($proxyKey);
+    }
+
+    // 2. Cấu hình Request tới ElevenLabs
+    $targetUrl = "https://api.elevenlabs.io/v1/text-to-speech/" . $voiceId;
+    
+    // Tái tạo body chuẩn cho ElevenLabs
+    $elBody = [
+        "text" => $data['text'],
+        "model_id" => $data['model_id'],
+        "voice_settings" => $data['voice_settings']
+    ];
+    if (isset($data['language_code'])) {
+        $elBody['language_code'] = $data['language_code'];
+    }
+
+    $ch = curl_init($targetUrl);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($elBody));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    
+    // Header
+    $headers = [
+        "Content-Type: application/json",
+        "xi-api-key: " . $apiKey,
+        "Accept: audio/mpeg"
+    ];
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    
+    // Gắn Proxy nếu có
+    if ($proxy) {
+        curl_setopt($ch, CURLOPT_PROXY, $proxy);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 120); // Tăng timeout
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30);
+    } else {
+        curl_setopt($ch, CURLOPT_TIMEOUT, 60);
+    }
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+    $error = curl_error($ch);
+    curl_close($ch);
+    
+    // 3. Trả về kết quả
+    http_response_code($httpCode);
+    if ($contentType) {
+        header("Content-Type: " . $contentType);
+    }
+
+    if ($error) {
+        // Trả lỗi dạng JSON để React hiển thị đẹp
+        header("Content-Type: application/json");
+        echo json_encode(["detail" => ["message" => "Relay Error: " . $error . ($proxy ? " (Used Proxy: $proxy)" : "")]]);
+    } else {
+        echo $response;
+    }
+    exit;
+}
+
+// Nếu không đúng Action
+header("Content-Type: application/json");
+echo json_encode(["error" => "Invalid Action or Empty Request"]);
+?>`;
 
 export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   isOpen,
@@ -49,6 +222,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   // Check IP State
   const [checkingIp, setCheckingIp] = useState(false);
   const [ipResult, setIpResult] = useState<{ip: string, proxy: string} | null>(null);
+  const [localIp, setLocalIp] = useState<string | null>(null);
   const [ipError, setIpError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -63,6 +237,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   useEffect(() => {
       if(isOpen) {
           setIpResult(null);
+          setLocalIp(null);
           setIpError(null);
       }
   }, [isOpen]);
@@ -91,12 +266,22 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   const handleCheckIp = async () => {
       setCheckingIp(true);
       setIpResult(null);
+      setLocalIp(null);
       setIpError(null);
       
-      // Use the value from the input if editing, otherwise the saved prop
       const keyToCheck = isEditingProxy ? proxyKeyInput : proxyKey;
       
       try {
+          // 1. Get Local IP (Browser)
+          try {
+              const localReq = await fetch('https://api.ipify.org?format=json');
+              const localData = await localReq.json();
+              setLocalIp(localData.ip);
+          } catch(e) {
+              setLocalIp("Không xác định");
+          }
+
+          // 2. Get Server Output IP
           const result = await checkProxyIp(keyToCheck);
           setIpResult({ ip: result.ip, proxy: result.used_proxy });
       } catch (e: any) {
@@ -105,6 +290,18 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
           setCheckingIp(false);
       }
   }
+
+  const handleDownloadPhp = () => {
+      const blob = new Blob([PHP_SCRIPT_CONTENT], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'ai_studio_code.php';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+  };
 
   const keyCount = elevenLabsApiKey.split('\n').filter(k => k.trim()).length;
 
@@ -198,7 +395,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                     )}
                 </h3>
                 <p className="text-slate-400 text-xs mb-4">
-                    Tự động đổi IP để tránh bị ElevenLabs chặn khi tạo số lượng lớn.
+                    Tự động đổi IP để tránh bị ElevenLabs chặn khi tạo số lượng lớn (Khắc phục lỗi "Unusual activity").
                 </p>
 
                 {!isEditingProxy && proxyKey ? (
@@ -248,6 +445,20 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                     </div>
                 )}
                 
+                {/* Download Backend Script */}
+                <div className="mt-3 p-3 bg-slate-700/30 rounded-lg border border-slate-600/50">
+                    <p className="text-[10px] text-slate-400 mb-2">
+                        Để Proxy hoạt động, bạn cần tải file Backend này (đã fix lỗi) và upload đè lên file cũ trên host của bạn.
+                    </p>
+                    <button 
+                        onClick={handleDownloadPhp}
+                        className="w-full flex items-center justify-center space-x-2 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs py-2 px-3 rounded border border-slate-500 transition-colors"
+                    >
+                        <DownloadIcon />
+                        <span>Tải file ai_studio_code.php (Bản chuẩn)</span>
+                    </button>
+                </div>
+                
                 {/* IP Check Tool - Always Visible */}
                 <div className="mt-4 pt-3 border-t border-slate-700">
                     <div className="flex items-center justify-between">
@@ -262,10 +473,18 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                          </button>
                     </div>
                     
+                    {localIp && (
+                         <div className="mt-2 text-xs bg-slate-900/50 p-2 rounded border border-blue-500/30 text-blue-300">
+                            <span className="text-slate-500">IP Trình duyệt (Local):</span> <span className="font-mono font-bold">{localIp}</span>
+                        </div>
+                    )}
+                    
                     {ipResult && (
-                        <div className="mt-2 text-xs bg-slate-900/50 p-2 rounded border border-green-500/30 text-green-300">
-                            <div><span className="text-slate-500">IP hiện tại:</span> <span className="font-mono font-bold">{ipResult.ip}</span></div>
-                            <div><span className="text-slate-500">Qua Proxy:</span> {ipResult.proxy}</div>
+                        <div className="mt-1 text-xs bg-slate-900/50 p-2 rounded border border-green-500/30 text-green-300">
+                            <div><span className="text-slate-500">IP Server (Output):</span> <span className="font-mono font-bold">{ipResult.ip}</span></div>
+                            <div className="mt-1 border-t border-slate-700/50 pt-1">
+                                <span className="text-slate-500">Trạng thái:</span> {ipResult.proxy}
+                            </div>
                         </div>
                     )}
                     
