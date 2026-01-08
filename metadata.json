@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Công cụ chuyển đổi tệp văn bản sang giọng nói",
+  "description": "Một ứng dụng đọc tệp .txt, chia nội dung theo từng đoạn và sử dụng Gemini API để tạo clip âm thanh cho mỗi đoạn.",
+  "requestFramePermissions": []
+}
